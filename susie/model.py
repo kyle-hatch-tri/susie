@@ -83,6 +83,8 @@ def load_vae(
     def vae_encode(vae_params, key, sample, scale=False):
         # handle the case where `sample` is multiple images stacked
         batch_size = sample.shape[0]
+        # jax.debug.print("[vae_encode] batch_size: {batch_size}", batch_size=batch_size)
+        
         sample = eo.rearrange(sample, "n h w (x c) -> (n x) h w c", c=3)
         latents = vae.apply({"params": vae_params}, sample, method=vae.encode).sample(
             key
@@ -144,7 +146,7 @@ def load_pretrained_unet(
     path: str, in_channels: int
 ) -> Tuple[FlaxUNet2DConditionModel, dict]:
     model_def, params = FlaxUNet2DConditionModel.from_pretrained(
-        path, dtype=np.float32, subfolder="unet"
+        path, dtype=np.float32, subfolder="unet"#, from_pt=True
     )
 
     # same issue, they commit the params to the CPU, which totally messes stuff
@@ -159,6 +161,9 @@ def load_pretrained_unet(
         (h, w, in_channels, cout), dtype=old_conv_in.dtype
     )
     params["conv_in"]["kernel"][:, :, :cin, :] = old_conv_in
+    # assert in_channels % cin == 0
+    # params["conv_in"]["kernel"] = np.repeat(old_conv_in, in_channels // cin, axis=2)
+    # params["conv_in"]["kernel"] /= in_channels / cin
 
     # monkey-patch __call__ to use channels-last
     model_def.__call__ = lambda self, sample, *args, **kwargs: eo.rearrange(

@@ -25,11 +25,28 @@ from jax.sharding import PartitionSpec as P
 from ml_collections import ConfigDict, config_flags
 from PIL import Image
 
+from s3_save import S3SyncCallback
+
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+# os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"]=".XX"
+# os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
+# os.environ["CUDA_VISIBLE_DEVICES"]="1"
+
+# print("\n" * 5 + " ENV VARIABLES")
+# print("os.environ[\"CUDA_VISIBLE_DEVICES\"]:", os.environ["CUDA_VISIBLE_DEVICES"])
+# print("os.environ[\"XLA_PYTHON_CLIENT_PREALLOCATE\"]:", os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"])
+# print("\n" * 5)
+
+import sys 
+print("(before) sys.path:", sys.path)
+# sys.path.append("/opt/ml/code/external/dlimp")
+# print("(after) sys.path:", sys.path)
+
 import wandb
 from susie import sampling, scheduling
 from susie.data.datasets import get_data_loader
 from susie.jax_utils import (
-    host_broadcast_str,
+    host_broadcast_str, 
     initialize_compilation_cache,
 )
 from susie.model import (
@@ -41,7 +58,10 @@ from susie.model import (
 )
 
 if jax.process_count() > 1:
+    print("\n\n\nIn multi process\n\n\n")
     jax.distributed.initialize()
+else:
+    print("\n\n\nNot in multi process\n\n\n")
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
@@ -88,6 +108,9 @@ def train_step(
     eval_only=False,
 ):
     batch_size = batch["subgoals"].shape[0]
+    # jax.debug.print("batch_size: {batch_size}", batch_size=batch_size)
+    jax.debug.visualize_array_sharding(batch["prompt_ids"])
+    jax.debug.inspect_array_sharding(batch["prompt_ids"], callback=print)
 
     # encode stuff
     for key in {"curr", "goals", "subgoals"}.intersection(batch.keys()):
@@ -188,8 +211,17 @@ config_flags.DEFINE_config_file(
     lock_config=False,
 )
 
+###TODO
+config_flags.DEFINE_config_file(
+    "model_dir",
+    None,
+    "File path to the hyperparameter configuration.",
+    lock_config=False,
+)
+
 
 def main(_):
+# def train():
     config = FLAGS.config
 
     assert config.sample.num_contexts % 4 == 0
@@ -203,6 +235,31 @@ def main(_):
     logging.info(f"Local devices: {jax.local_device_count()}")
     logging.info(f"Global devices: {jax.device_count()}")
 
+
+    logging.info(f"os.listdir('{config.data.calvin.data_path}'): {os.listdir(config.data.calvin.data_path)}")
+    logging.info(f"os.listdir('{config.data.somethingsomething.data_path}'): {os.listdir(config.data.somethingsomething.data_path)}")
+
+    # logging.info(f"os.listdir('/root/.cache/huggingface/hub'): {os.listdir('/root/.cache/huggingface/hub')}")
+
+    # base_unet_path = "/root/.cache/huggingface/hub/models--kvablack--instruct-pix2pix-flax/snapshots/3685168bbc9a2d3f5ea911f2c97c66316aa672b2"
+    # logging.info(f"os.listdir('{base_unet_path}'): {os.listdir(base_unet_path)}")
+
+    # unet_path = "/root/.cache/huggingface/hub/models--kvablack--instruct-pix2pix-flax/snapshots/3685168bbc9a2d3f5ea911f2c97c66316aa672b2/unet"
+    # logging.info(f"os.listdir('{unet_path}'): {os.listdir(unet_path)}")
+
+    # base_vae_path = "/root/.cache/huggingface/hub/models--runwayml--stable-diffusion-v1-5/snapshots/ba3e4bb1bac6871f4bd33c4a4453acb9813477e7"
+    # logging.info(f"os.listdir('{base_vae_path}'): {os.listdir(base_vae_path)}")
+
+    # vae_path = "/root/.cache/huggingface/hub/models--runwayml--stable-diffusion-v1-5/snapshots/ba3e4bb1bac6871f4bd33c4a4453acb9813477e7/vae"
+    # logging.info(f"os.listdir('{vae_path}'): {os.listdir(vae_path)}")
+
+    # tokenizer_path = "/root/.cache/huggingface/hub/models--runwayml--stable-diffusion-v1-5/snapshots/ba3e4bb1bac6871f4bd33c4a4453acb9813477e7/tokenizer"
+    # logging.info(f"os.listdir('{tokenizer_path}'): {os.listdir(tokenizer_path)}")
+
+    # text_encoder_path = "/root/.cache/huggingface/hub/models--runwayml--stable-diffusion-v1-5/snapshots/ba3e4bb1bac6871f4bd33c4a4453acb9813477e7/text_encoder"
+    # logging.info(f"os.listdir('{text_encoder_path}'): {os.listdir(text_encoder_path)}")
+
+
     mesh = jax.sharding.Mesh(
         # create_device_mesh([32, 1]), # can't make contiguous meshes for the v4-64 pod for some reason
         np.array(jax.devices()).reshape(*config.mesh),
@@ -213,7 +270,9 @@ def main(_):
     data_sharding = NamedSharding(mesh, P(["dp", "fsdp"]))
 
     # initial rng
-    rng = jax.random.PRNGKey(config.seed + jax.process_index())
+    # rng = jax.random.PRNGKey(config.seed + jax.process_index())
+    x = jax.process_index()
+    rng = jax.random.PRNGKey(config.seed + x)
 
     # set up wandb run
     if config.wandb_resume_id is not None:
@@ -224,7 +283,7 @@ def main(_):
         config.wandb_resume_id = run.id
         logdir = tf.io.gfile.join(config.logdir, run.name)
 
-        if jax.process_index() == 0:
+        if config.enable_wandb and jax.process_index() == 0:
             wandb.init(
                 project=run.project,
                 id=run.id,
@@ -233,6 +292,9 @@ def main(_):
     else:
         unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
         unique_id = host_broadcast_str(unique_id)
+
+        if os.environ["EXP_DESCRIPTION"] is not None:
+            config.run_name += "_" + os.environ["EXP_DESCRIPTION"]
 
         if not config.run_name:
             config.run_name = unique_id
@@ -243,19 +305,26 @@ def main(_):
 
         if jax.process_index() == 0:
             tf.io.gfile.makedirs(logdir)
-            wandb.init(
-                project=config.wandb_project,
-                name=config.run_name,
-                config=config.to_dict(),
-            )
+
+            if config.enable_wandb:
+                wandb.init(
+                    project=config.wandb_project,
+                    name=config.run_name,
+                    config=config.to_dict(),
+                )
 
     checkpointer = orbax.checkpoint.CheckpointManager(
-        logdir,
+        os.path.abspath(logdir),
         checkpointers={
-            "state": orbax.checkpoint.PyTreeCheckpointer(),
+            # "state": orbax.checkpoint.PyTreeCheckpointer(),
             "params_ema": orbax.checkpoint.PyTreeCheckpointer(),
+            # "params": orbax.checkpoint.PyTreeCheckpointer(), ###===###
+            # "tx": orbax.checkpoint.PyTreeCheckpointer(), ###---###
         },
     )
+
+    s3_sync_callback = S3SyncCallback(os.path.abspath(logdir), config.s3_save_uri + "/" + config.wandb_project + "/" + config.run_name)
+    
 
     log_snr_fn = scheduling.create_log_snr_fn(config.scheduling)
     ema_decay_fn = scheduling.create_ema_decay_fn(config.ema)
@@ -285,6 +354,7 @@ def main(_):
             logging.warning(f"Overriding pretrained config keys: {config.model.keys()}")
             pretrained_config.update(config.model)
         config.model = pretrained_config
+        
     else:
         pretrained_params = None
 
@@ -320,9 +390,11 @@ def main(_):
     train_loader, val_loader, num_datasets = get_data_loader(
         config.data, tokenize_fn, mesh
     )
+
     # warm up loaders
     logging.info("Warming up data loaders...")
     next(train_loader), next(val_loader)
+    print("Done warming up")
 
     # initialize parameters
     if pretrained_params is None or config.wandb_resume_id is not None:
@@ -363,6 +435,7 @@ def main(_):
         state_shape = jax.eval_shape(
             init_fn, rng
         )  # pytree of ShapeDtypeStructs for the TrainState
+        
         state_sharding = jax.tree_map(
             lambda x: fsdp_sharding(mesh, x), state_shape
         )  # pytree of NamedShardings
@@ -395,6 +468,7 @@ def main(_):
             params_ema=pretrained_params,
             tx=tx,
         )
+
         state = jax.tree_map(np.array, state)
         state_sharding = jax.tree_map(lambda x: fsdp_sharding(mesh, x), state)
         state = jax.tree_map(
@@ -404,6 +478,21 @@ def main(_):
             state,
             state_sharding,
         )
+
+    # checkpointer.save(
+    #     42,
+    #     {"state": state, "params_ema": state.params_ema},
+    #     {
+    #         "state": {
+    #             "save_args": orbax_utils.save_args_from_target(state),
+    #         },
+    #         "params_ema": {
+    #             "save_args": orbax_utils.save_args_from_target(
+    #                 state.params_ema
+    #             ),
+    #         },
+    #     },
+    # )
 
     # create train and eval step
     train_step_configured = partial(
@@ -416,21 +505,25 @@ def main(_):
         goal_drop_rate=config.goal_drop_rate,
         prompt_drop_rate=config.prompt_drop_rate,
     )
+
     train_in_shardings = (
         replicated_sharding,  # rng
         state_sharding,  # state
         data_sharding,  # batch
     )
+
     train_out_shardings = (
         state_sharding,  # new_state
         replicated_sharding,  # info
     )
+
     train_step_jit = jax.jit(
         partial(train_step_configured, eval_only=False),
         in_shardings=train_in_shardings,
         out_shardings=train_out_shardings,
         donate_argnums=1,
     )
+
     eval_step_jit = jax.jit(
         partial(train_step_configured, eval_only=True),
         in_shardings=train_in_shardings,
@@ -475,6 +568,12 @@ def main(_):
     pbar = tqdm(range(start_step, config.num_steps))
     for step in pbar:
         batch = next(train_loader)
+        batch_size = batch["subgoals"].shape[0]
+
+        if step == 0:
+            print("[print] batch_size:", batch_size)
+            jax.debug.print("[jax.debug.print] batch_size: {batch_size}", batch_size=batch_size)
+            
 
         rng, train_step_rng = jax.random.split(rng)
         state, info = train_step_jit(train_step_rng, state, batch)
@@ -502,7 +601,8 @@ def main(_):
             summary["train/ema_decay"] = jax.device_get(ema_decay)
             summary["train/lr"] = jax.device_get(learning_rate_fn(step))
 
-            wandb.log(summary, step=step + 1)
+            if config.enable_wandb:
+                wandb.log(summary, step=step + 1)
 
         if (step + 1) % config.val_interval == 0:
             # compute and log validation metrics
@@ -515,7 +615,13 @@ def main(_):
                     val_metrics[k].append(v)
             if jax.process_index() == 0:
                 summary = {f"val/{k}": np.mean(v) for k, v in val_metrics.items()}
-                wandb.log(summary, step=step + 1)
+
+                if config.enable_wandb:
+                    wandb.log(summary, step=step + 1)
+
+                val_batch_size = batch["subgoals"].shape[0]
+                print("[print] val batch_size:", val_batch_size)
+                jax.debug.print("[jax.debug.print] val batch_size: {batch_size}", batch_size=val_batch_size)
 
         if (step + 1) % config.sample_interval == 0:
             pbar.set_postfix_str("sampling")
@@ -603,31 +709,60 @@ def main(_):
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     pil.save(os.path.join(tmpdir, "image.jpg"), quality=95)
-                    wandb.log(
-                        {
-                            "samples": wandb.Image(
-                                os.path.join(tmpdir, "image.jpg"), caption=prompt_str
-                            )
-                        },
-                        step=step + 1,
+
+                    if config.enable_wandb:
+                        wandb.log(
+                            {
+                                "samples": wandb.Image(
+                                    os.path.join(tmpdir, "image.jpg"), caption=prompt_str
+                                )
+                            },
+                            step=step + 1,
                     )
 
         if (step + 1) % config.save_interval == 0:
             checkpointer.save(
                 step + 1,
-                {"state": state, "params_ema": state.params_ema},
+                # {"state": state, "params_ema": state.params_ema},
+                {"params_ema": state.params_ema},
+                # {"state": state, "params_ema": state.params_ema, "params": state.params, "tx":state.tx}, ###===### ###---###
                 {
-                    "state": {
-                        "save_args": orbax_utils.save_args_from_target(state),
-                    },
+                    # "state": {
+                    #     "save_args": orbax_utils.save_args_from_target(state),
+                    # },
                     "params_ema": {
                         "save_args": orbax_utils.save_args_from_target(
                             state.params_ema
                         ),
                     },
+
+                    # "params": { ###===###
+                    #     "save_args": orbax_utils.save_args_from_target(
+                    #         state.params
+                    #     ),
+                    # },
+
+                    # "tx": {
+                    #     "save_args": orbax_utils.save_args_from_target(
+                    #         state.tx ###---###
+                    #     ),
+                    # },
                 },
             )
+            logging.info(f"Model checkpoint saved for step {step + 1}")
+
+            if config.save_to_s3:
+                s3_sync_callback.on_train_epoch_end(step + 1)
 
 
 if __name__ == "__main__":
     app.run(main)
+    # train()
+
+
+"""
+alias p3=python3
+export WANDB_ENTITY="tri"
+export WANDB_API_KEY="65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1"
+python3 -u scripts/train.py --config configs/base.py:base
+"""

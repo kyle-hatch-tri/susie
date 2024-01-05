@@ -63,14 +63,23 @@ class GetPaths:
 
     @staticmethod
     def calvin(data_path: str, train: bool) -> List[str]:
+        # trajXXX.tfrecord is language conditioned
+        # trajXXX/0.tfrecord is goal conditioned 
+
         if train:
-            return (
-                tf.io.gfile.glob(f"{data_path}/training/A/*")
-                + tf.io.gfile.glob(f"{data_path}/training/B/*")
-                + tf.io.gfile.glob(f"{data_path}/training/C/*")
-            )
+            # A_files = tf.io.gfile.glob(f"{data_path}/training/A/**.tfrecord")# + tf.io.gfile.glob(f"{data_path}/training/A/**/*.tfrecord")
+            # B_files = tf.io.gfile.glob(f"{data_path}/training/B/**.tfrecord")# + tf.io.gfile.glob(f"{data_path}/training/B/**/*.tfrecord")
+            # C_files = tf.io.gfile.glob(f"{data_path}/training/C/**.tfrecord")# + tf.io.gfile.glob(f"{data_path}/training/C/**/*.tfrecord")
+            A_files = tf.io.gfile.glob(f"{data_path}/training/A/*.tfrecord")
+            B_files = tf.io.gfile.glob(f"{data_path}/training/B/*.tfrecord")
+            C_files = tf.io.gfile.glob(f"{data_path}/training/C/*.tfrecord")
+            return  A_files + B_files + C_files
         else:
-            return tf.io.gfile.glob(f"{data_path}/validation/D/*")
+            # return tf.io.gfile.glob(f"{data_path}/validation/D/*")
+
+            # D_files = tf.io.gfile.glob(f"{data_path}/validation/D/**.tfrecord")# + tf.io.gfile.glob(f"{data_path}/validation/D/**/*.tfrecord")
+            D_files = tf.io.gfile.glob(f"{data_path}/validation/D/*.tfrecord")
+            return D_files
 
 
 def make_dataset(
@@ -98,6 +107,7 @@ def make_dataset(
         .unbatch()
         .shuffle(shuffle_buffer_size)
     )
+
 
     dataset = dataset.map(
         partial(dl.transforms.decode_images, match=["curr", "goals", "subgoals"])
@@ -140,10 +150,13 @@ def get_data_loader(data_config, tokenize_fn, mesh=None):
     val_datasets = []
     weights = []
     for data_name, data_kwargs in data_config.items():
+        print("\ndata_name:", data_name)
         data_kwargs = dict(data_kwargs)
         weights.append(float(data_kwargs.pop("weight")))
         train_datasets.append(make_dataset(data_name, train=True, **data_kwargs))
         val_datasets.append(make_dataset(data_name, train=False, **data_kwargs))
+        print("next(iter(train_datasets[-1]))[\"lang\"]:", next(iter(train_datasets[-1]))["lang"])
+
 
     train = dl.DLataset.sample_from_datasets(
         train_datasets, weights=weights, stop_on_empty_dataset=True

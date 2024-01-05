@@ -8,8 +8,9 @@ def base():
 
     # top-level stuff
     config.seed = 42
-    config.wandb_project = "susie"
-    config.run_name = ""
+    config.enable_wandb = True
+    config.wandb_project = "susie_test"
+    config.run_name = "test1"
     config.logdir = "logs"
     config.num_steps = 40000
     config.log_interval = 100
@@ -66,7 +67,14 @@ def base():
 
     # data
     config.data = ConfigDict()
-    config.data.batch_size = 128
+    # config.data.batch_size = 128
+    # config.data.batch_size = 48
+    # config.data.batch_size = 72
+    # config.data.batch_size = 129
+    # config.data.batch_size = 99
+    # config.data.batch_size = 114
+    # config.data.batch_size = 108
+    config.data.batch_size = 64 # 32 per gpu
 
     data_base = ConfigDict()
     data_base.image_size = 256
@@ -98,27 +106,28 @@ def base():
     #     truncate=True,
     # )
 
-    config.data.bridge = bridge = deepcopy(data_base)
-    bridge.weight = 45.0
-    bridge.data_path = ""
-    bridge.goal_relabeling_fn = "subgoal_only"
-    bridge.goal_relabeling_kwargs = dict(
-        subgoal_delta=(11, 14),
-        truncate=False,
-    )
-
-    # config.data.calvin = calvin = deepcopy(data_base)
-    # calvin.weight = 15.0
-    # calvin.data_path = ""
-    # calvin.goal_relabeling_fn = "subgoal_only"
-    # calvin.goal_relabeling_kwargs = dict(
-    #     subgoal_delta=(20, 21),
+    # config.data.bridge = bridge = deepcopy(data_base)
+    # bridge.weight = 45.0
+    # bridge.data_path = ""
+    # bridge.goal_relabeling_fn = "subgoal_only"
+    # bridge.goal_relabeling_kwargs = dict(
+    #     subgoal_delta=(11, 14),
     #     truncate=False,
     # )
 
+    config.data.calvin = calvin = deepcopy(data_base)
+    calvin.weight = 15.0
+    calvin.data_path = "/home/kylehatch/Desktop/hidql/data/calvin_data_processed/language_conditioned" 
+    calvin.goal_relabeling_fn = "subgoal_only"
+    calvin.goal_relabeling_kwargs = dict(
+        subgoal_delta=(20, 21),
+        truncate=False,
+    )
+
     config.data.somethingsomething = somethingsomething = deepcopy(data_base)
     somethingsomething.weight = 75.0
-    somethingsomething.data_path = ""
+    somethingsomething.data_path = "/home/kylehatch/Desktop/hidql/data/something_something_processed"
+    # somethingsomething.data_path = "/opt/ml/code/data/something_something_processed"
     somethingsomething.goal_relabeling_fn = "subgoal_only"
     somethingsomething.goal_relabeling_kwargs = dict(
         subgoal_delta=(11, 14),
@@ -127,19 +136,38 @@ def base():
 
     # model
     config.model = model = ConfigDict()
+    # config.model.pretrained = "kvablack/susie"
+    # config.model.pretrained = "/home/kylehatch/Desktop/hidql/orig_model/instruct-pix2pix-flax"
+    # config.model.pretrained = "instruct-pix2pix"
+    # config.model.pretrained = "timbrooks/instruct-pix2pix"
+    # config.model.pretrained = "/opt/ml/code/external/orig_model/instruct-pix2pix-flax"
     config.model.pretrained = "kvablack/instruct-pix2pix-flax"
+
+    
+    config.s3_save_uri = "s3://kyle-sagemaker-training-outputs"
+    config.save_to_s3 = True
+    
 
     return config
 
 
+
+
 def debug():
     config = base()
-    config.logdir = "logs"
-    config.log_interval = 150
-    config.save_interval = 150
-    config.val_interval = 150
+    config.logdir = "debug_logs"
+    config.num_steps =  20
+    config.log_interval = 10
+    config.save_interval = 5
+    config.val_interval = 15
     config.sample_interval = 10
     config.num_val_batches = 4
+
+    config.data.batch_size = 16
+
+    config.enable_wandb = False
+    config.wandb_project = "trash_results"
+    
 
     config.vae = "runwayml/stable-diffusion-v1-5:flax"
     config.text_encoder = "runwayml/stable-diffusion-v1-5:flax"
@@ -149,7 +177,8 @@ def debug():
     config.sample.num_steps = 20
     config.sample.w = 1.0
 
-    config.data.batch_size = 16
+
+    config.data.batch_size = 18
     for data in [d for d in config.data.values() if isinstance(d, ConfigDict)]:
         data.shuffle_buffer_size = 100
         # data.image_size = 32
@@ -176,5 +205,56 @@ def debug():
     return config
 
 
+def sagemaker():
+    config = base()
+    config.data.batch_size = 128
+
+    config.data.calvin.data_path = "/opt/ml/input/data/calvin_data_processed"
+    config.data.somethingsomething.data_path = "/opt/ml/input/data/something_something_processed"
+
+    return config
+
+
+def sagemaker_local_debug():
+    config = debug()
+
+    config.enable_wandb = False
+
+    # config.data.batch_size = 99
+    # config.data.batch_size = 64
+    config.data.batch_size = 18
+
+    
+
+    config.data.calvin.data_path = "/opt/ml/input/data/calvin_data_processed"
+    config.data.somethingsomething.data_path = "/opt/ml/input/data/something_something_processed"
+
+    return config
+
+
+def sagemaker_debug():
+    config = debug()
+
+    config.enable_wandb = True
+    config.data.batch_size = 64
+    config.data.calvin.data_path = "/opt/ml/input/data/calvin_data_processed"
+    config.data.somethingsomething.data_path = "/opt/ml/input/data/something_something_processed"
+
+    return config
+
+
 def get_config(name):
     return globals()[name]()
+
+
+"""
+
+alias p3=python3
+alias c=clear
+export WANDB_ENTITY="tri"
+export WANDB_API_KEY="65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1"
+export PYTHONPATH=$PYTHONPATH:/home/kylehatch/Desktop/hidql/susie/external/dlimp
+export EXP_DESCRIPTION="local_nosm"
+export CUDA_VISIBLE_DEVICES=1
+python3 -u train.py --config configs/base.py:debug
+"""
