@@ -44,7 +44,7 @@ print("(before) sys.path:", sys.path)
 
 import wandb
 from susie import sampling, scheduling
-from susie.data.datasets import get_data_loader
+from susie.data.datasets import get_data_loader, get_data_loader2
 from susie.jax_utils import (
     host_broadcast_str, 
     initialize_compilation_cache,
@@ -237,6 +237,7 @@ def main(_):
 
 
     logging.info(f"os.listdir('{config.data.calvin.data_path}'): {os.listdir(config.data.calvin.data_path)}")
+    logging.info(f"os.listdir('{config.data.libero.data_path}'): {os.listdir(config.data.libero.data_path)}")
     logging.info(f"os.listdir('{config.data.somethingsomething.data_path}'): {os.listdir(config.data.somethingsomething.data_path)}")
 
     # logging.info(f"os.listdir('/root/.cache/huggingface/hub'): {os.listdir('/root/.cache/huggingface/hub')}")
@@ -387,13 +388,14 @@ def main(_):
         tx = optax.MultiSteps(tx, config.optim.accumulation_steps)
 
     # create data loader
-    train_loader, val_loader, num_datasets = get_data_loader(
-        config.data, tokenize_fn, mesh
-    )
+    # train_loader, val_loader, num_datasets = get_data_loader(config.data, tokenize_fn, mesh)
+    train_loader, val_loaders, num_datasets = get_data_loader2(config.data, tokenize_fn, mesh)
 
     # warm up loaders
     logging.info("Warming up data loaders...")
-    next(train_loader), next(val_loader)
+    next(train_loader)
+    for val_name, val_loader in val_loaders.items():
+        next(val_loader)    
     print("Done warming up")
 
     # initialize parameters
@@ -605,120 +607,123 @@ def main(_):
                 wandb.log(summary, step=step + 1)
 
         if (step + 1) % config.val_interval == 0:
-            # compute and log validation metrics
-            val_metrics = defaultdict(list)
-            for _ in tqdm(range(config.num_val_batches), desc="val", position=1):
-                batch = next(val_loader)
-                rng, val_step_rng = jax.random.split(rng)
-                state, info = eval_step_jit(val_step_rng, state, batch)
-                for k, v in info.items():
-                    val_metrics[k].append(v)
-            if jax.process_index() == 0:
-                summary = {f"val/{k}": np.mean(v) for k, v in val_metrics.items()}
+            for val_name, val_loader in val_loaders.items():
+                # compute and log validation metrics
+                val_metrics = defaultdict(list)
+                for _ in tqdm(range(config.num_val_batches), desc="val", position=1):
+                    batch = next(val_loader)
+                    rng, val_step_rng = jax.random.split(rng)
+                    state, info = eval_step_jit(val_step_rng, state, batch)
+                    for k, v in info.items():
+                        val_metrics[k].append(v)
+                if jax.process_index() == 0:
+                    summary = {f"val/{val_name}/{k}": np.mean(v) for k, v in val_metrics.items()}
 
-                if config.enable_wandb:
-                    wandb.log(summary, step=step + 1)
+                    if config.enable_wandb:
+                        wandb.log(summary, step=step + 1)
 
-                val_batch_size = batch["subgoals"].shape[0]
-                print("[print] val batch_size:", val_batch_size)
-                jax.debug.print("[jax.debug.print] val batch_size: {batch_size}", batch_size=val_batch_size)
+                    val_batch_size = batch["subgoals"].shape[0]
+                    print("[print] val batch_size:", val_batch_size)
+                    jax.debug.print("[jax.debug.print] val batch_size: {batch_size}", batch_size=val_batch_size)
 
         if (step + 1) % config.sample_interval == 0:
             pbar.set_postfix_str("sampling")
 
-            data = defaultdict(list)
-            while not data or len(data["curr"]) < config.sample.num_contexts:
-                batch = next(val_loader)
-                batch = multihost_utils.process_allgather(batch)
-                for key in {"curr", "goals", "prompt_ids"}.intersection(batch.keys()):
-                    data[key].extend(batch[key])
-            data = {k: np.array(v) for k, v in data.items()}
+            for val_name, val_loader in val_loaders.items():
 
-            data = jax.tree_map(lambda x: x[: config.sample.num_contexts], data)
+                data = defaultdict(list)
+                while not data or len(data["curr"]) < config.sample.num_contexts:
+                    batch = next(val_loader)
+                    batch = multihost_utils.process_allgather(batch)
+                    for key in {"curr", "goals", "prompt_ids"}.intersection(batch.keys()):
+                        data[key].extend(batch[key])
+                data = {k: np.array(v) for k, v in data.items()}
 
-            # get rid of goals if we're not using them
-            if config.goal_drop_rate == 1.0:
-                data["goals"] = np.zeros(
-                    data["curr"].shape[:-1] + (0,), data["curr"].dtype
-                )
-            else:
-                # make the first half have no prompt
-                # data["prompt_ids"][: config.sample.num_contexts // 2] = uncond_prompt_id
-                # make the second half have no goal
-                # data["goals"][config.sample.num_contexts // 2 :] = 0
-                pass
+                data = jax.tree_map(lambda x: x[: config.sample.num_contexts], data)
 
-            # concatenate to make context
-            contexts = np.concatenate([data["curr"], data["goals"]], axis=-1)
-
-            # encode stuff
-            if config.vae:
-                rng, encode_rng = jax.random.split(rng)
-                contexts = jax.device_get(vae_encode(encode_rng, contexts))
-            prompt_embeds = jax.device_get(text_encode(data["prompt_ids"]))
-
-            # repeat
-            contexts_repeated = eo.repeat(
-                contexts, "n ... -> (n r) ...", r=config.sample.num_samples_per_context
-            )
-            prompt_embeds_repeated = eo.repeat(
-                prompt_embeds,
-                "n ... -> (n r) ...",
-                r=config.sample.num_samples_per_context,
-            )
-
-            # run sample loop
-            rng, sample_rng = jax.random.split(rng)
-            samples = sample_loop_jit(
-                sample_rng,
-                state,
-                contexts_repeated,
-                prompt_embeds_repeated,
-                jnp.zeros_like(contexts_repeated),
-                jnp.broadcast_to(uncond_prompt_embed, prompt_embeds_repeated.shape),
-            )  # (num_contexts * num_samples_per_context, h, w, c)
-
-            if config.vae:
-                samples = jax.device_get(vae_decode(samples, scale=True))
-                contexts = jax.device_get(vae_decode(contexts, scale=False))
-
-            right = eo.rearrange(
-                samples,
-                "(n r) h w c -> (n h) (r w) c",
-                r=config.sample.num_samples_per_context,
-            )
-            left = eo.rearrange(contexts, "n h w (x c) -> (n h) (x w) c", c=3)
-
-            final_image = np.concatenate([left, right], axis=1)
-            final_image = np.clip(np.round(final_image * 127.5 + 127.5), 0, 255).astype(
-                np.uint8
-            )
-
-            if jax.process_index() == 0:
-                prompts = untokenize(data["prompt_ids"])
-                prompt_str = "; ".join(prompts)
-                pil = Image.fromarray(final_image)
-                with tf.io.gfile.GFile(
-                    tf.io.gfile.join(logdir, f"{step + 1}.jpg"), "wb"
-                ) as f:
-                    pil.save(f, format="jpeg", quality=95)
-                with tf.io.gfile.GFile(
-                    tf.io.gfile.join(logdir, f"{step + 1}.txt"), "w"
-                ) as f:
-                    f.write(prompt_str)
-
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    pil.save(os.path.join(tmpdir, "image.jpg"), quality=95)
-
-                    if config.enable_wandb:
-                        wandb.log(
-                            {
-                                "samples": wandb.Image(
-                                    os.path.join(tmpdir, "image.jpg"), caption=prompt_str
-                                )
-                            },
-                            step=step + 1,
+                # get rid of goals if we're not using them
+                if config.goal_drop_rate == 1.0:
+                    data["goals"] = np.zeros(
+                        data["curr"].shape[:-1] + (0,), data["curr"].dtype
                     )
+                else:
+                    # make the first half have no prompt
+                    # data["prompt_ids"][: config.sample.num_contexts // 2] = uncond_prompt_id
+                    # make the second half have no goal
+                    # data["goals"][config.sample.num_contexts // 2 :] = 0
+                    pass
+
+                # concatenate to make context
+                contexts = np.concatenate([data["curr"], data["goals"]], axis=-1)
+
+                # encode stuff
+                if config.vae:
+                    rng, encode_rng = jax.random.split(rng)
+                    contexts = jax.device_get(vae_encode(encode_rng, contexts))
+                prompt_embeds = jax.device_get(text_encode(data["prompt_ids"]))
+
+                # repeat
+                contexts_repeated = eo.repeat(
+                    contexts, "n ... -> (n r) ...", r=config.sample.num_samples_per_context
+                )
+                prompt_embeds_repeated = eo.repeat(
+                    prompt_embeds,
+                    "n ... -> (n r) ...",
+                    r=config.sample.num_samples_per_context,
+                )
+
+                # run sample loop
+                rng, sample_rng = jax.random.split(rng)
+                samples = sample_loop_jit(
+                    sample_rng,
+                    state,
+                    contexts_repeated,
+                    prompt_embeds_repeated,
+                    jnp.zeros_like(contexts_repeated),
+                    jnp.broadcast_to(uncond_prompt_embed, prompt_embeds_repeated.shape),
+                )  # (num_contexts * num_samples_per_context, h, w, c)
+
+                if config.vae:
+                    samples = jax.device_get(vae_decode(samples, scale=True))
+                    contexts = jax.device_get(vae_decode(contexts, scale=False))
+
+                right = eo.rearrange(
+                    samples,
+                    "(n r) h w c -> (n h) (r w) c",
+                    r=config.sample.num_samples_per_context,
+                )
+                left = eo.rearrange(contexts, "n h w (x c) -> (n h) (x w) c", c=3)
+
+                final_image = np.concatenate([left, right], axis=1)
+                final_image = np.clip(np.round(final_image * 127.5 + 127.5), 0, 255).astype(
+                    np.uint8
+                )
+
+                if jax.process_index() == 0:
+                    prompts = untokenize(data["prompt_ids"])
+                    prompt_str = "; ".join(prompts)
+                    pil = Image.fromarray(final_image)
+                    with tf.io.gfile.GFile(
+                        tf.io.gfile.join(logdir, f"{step + 1}.jpg"), "wb"
+                    ) as f:
+                        pil.save(f, format="jpeg", quality=95)
+                    with tf.io.gfile.GFile(
+                        tf.io.gfile.join(logdir, f"{step + 1}.txt"), "w"
+                    ) as f:
+                        f.write(prompt_str)
+
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        pil.save(os.path.join(tmpdir, "image.jpg"), quality=95)
+
+                        if config.enable_wandb:
+                            wandb.log(
+                                {
+                                    f"samples/{val_name}": wandb.Image(
+                                        os.path.join(tmpdir, "image.jpg"), caption=prompt_str
+                                    )
+                                },
+                                step=step + 1,
+                        )
 
         if (step + 1) % config.save_interval == 0:
             checkpointer.save(

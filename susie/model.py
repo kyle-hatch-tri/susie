@@ -230,6 +230,7 @@ def create_sample_fn(
 
     rng = jax.random.PRNGKey(int(time.time()))
 
+
     def sample(image, prompt, prompt_w=prompt_w, context_w=context_w):
         nonlocal rng
 

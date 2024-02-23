@@ -1,5 +1,6 @@
 from functools import partial
 from typing import Any, Dict, List
+import os
 
 import dlimp as dl
 import numpy as np
@@ -40,6 +41,16 @@ class Transforms:
         del x["proprioceptive_states"]
 
         return x
+    
+    @staticmethod
+    def libero(x: Dict[str, Any]) -> Dict[str, Any]:
+        x["obs"] = x.pop("image_states")
+        x["lang"] = x.pop("language_annotation")
+
+        del x["actions"]
+        del x["proprioceptive_states"]
+
+        return x
 
     @staticmethod
     def somethingsomething(x: Dict[str, Any]) -> Dict[str, Any]:
@@ -59,7 +70,10 @@ class GetPaths:
 
     @staticmethod
     def somethingsomething(data_path: str, train: bool) -> List[str]:
-        return f"{data_path}/{'train' if train else 'val'}"
+        # return f"{data_path}/{'train' if train else 'val'}"
+        path = f"{data_path}/{'train' if train else 'val'}"
+        print(f"[SMTH SMTH] len(os.listdir({path})): {len(os.listdir(path))}")
+        return path
 
     @staticmethod
     def calvin(data_path: str, train: bool) -> List[str]:
@@ -73,13 +87,37 @@ class GetPaths:
             A_files = tf.io.gfile.glob(f"{data_path}/training/A/*.tfrecord")
             B_files = tf.io.gfile.glob(f"{data_path}/training/B/*.tfrecord")
             C_files = tf.io.gfile.glob(f"{data_path}/training/C/*.tfrecord")
-            return  A_files + B_files + C_files
+            train_files = A_files + B_files + C_files
+            print(f"[CALVIN] len(train_files): {len(train_files)}")
+            return train_files
         else:
             # return tf.io.gfile.glob(f"{data_path}/validation/D/*")
 
             # D_files = tf.io.gfile.glob(f"{data_path}/validation/D/**.tfrecord")# + tf.io.gfile.glob(f"{data_path}/validation/D/**/*.tfrecord")
             D_files = tf.io.gfile.glob(f"{data_path}/validation/D/*.tfrecord")
+            print(f"[CALVIN] len(D_files): {len(D_files)}")
             return D_files
+        
+
+    @staticmethod
+    def libero(data_path: str, train: bool) -> List[str]:
+        # if train:
+        #     libero_90 = tf.io.gfile.glob(f"{data_path}/libero_90/**/*.tfrecord")
+        #     libero_goal = tf.io.gfile.glob(f"{data_path}/libero_goal/**/*.tfrecord")
+        #     libero_object = tf.io.gfile.glob(f"{data_path}/libero_object/**/*.tfrecord")
+        #     libero_spatial = tf.io.gfile.glob(f"{data_path}/libero_spatial/**/*.tfrecord")
+        #     return  libero_90 + libero_goal + libero_object + libero_spatial
+        # else:
+        #     return tf.io.gfile.glob(f"{data_path}/libero_10/**/*.tfrecord")
+        if train:       
+            train_files = tf.io.gfile.glob(f"{data_path}/train/*/*/*.tfrecord")
+            # tf.io.gfile.glob(f"{data_path}/train/**/*.tfrecord")
+            print(f"[LIBERO] len(train_files): {len(train_files)}")
+            return train_files
+        else:
+            val_files = tf.io.gfile.glob(f"{data_path}/val/*/*/*.tfrecord")
+            print(f"[LIBERO] len(val_files): {len(val_files)}")
+            return val_files
 
 
 def make_dataset(
@@ -180,3 +218,52 @@ def get_data_loader(data_config, tokenize_fn, mesh=None):
         return map(shard, train), map(shard, val), len(train_datasets)
     else:
         return train, val, len(train_datasets)
+
+
+def get_data_loader2(data_config, tokenize_fn, mesh=None):
+    data_config = dict(data_config)
+    batch_size = data_config.pop("batch_size")
+
+    train_datasets = []
+    val_datasets = []
+    weights = []
+    for data_name, data_kwargs in data_config.items():
+        print("\ndata_name:", data_name)
+        data_kwargs = dict(data_kwargs)
+        weight = float(data_kwargs.pop("weight"))
+        weights.append(weight)
+        train_datasets.append(make_dataset(data_name, train=True, **data_kwargs))
+        val_datasets.append((data_name, make_dataset(data_name, train=False, **data_kwargs), weight))
+        print("next(iter(train_datasets[-1]))[\"lang\"]:", next(iter(train_datasets[-1]))["lang"])
+        
+
+
+    train = dl.DLataset.sample_from_datasets(
+        train_datasets, weights=weights, stop_on_empty_dataset=True
+    ).batch(batch_size, num_parallel_calls=tf.data.AUTOTUNE)
+
+    
+    # val = dl.DLataset.sample_from_datasets(
+    #     val_datasets, weights=weights, stop_on_empty_dataset=True
+    # ).batch(batch_size, num_parallel_calls=tf.data.AUTOTUNE)
+
+    vals = {data_name: dl.DLataset.sample_from_datasets([val_dataset], weights=[weight], stop_on_empty_dataset=True).batch(batch_size, num_parallel_calls=tf.data.AUTOTUNE) for data_name, val_dataset, weight in val_datasets}
+
+    def shard(batch):
+        return multihost_utils.host_local_array_to_global_array(
+            batch,
+            mesh,
+            P(("dp", "fsdp")),
+        )
+
+    # WARNING: for some reason any amount of prefetching is also a total no-go in terms of memory usage...
+    train = map(tokenize_fn, train.as_numpy_iterator())
+    # val = map(tokenize_fn, val.as_numpy_iterator())
+    vals = {data_name:map(tokenize_fn, val.as_numpy_iterator()) for data_name, val in vals.items()}
+    
+
+    if mesh:
+        # return map(shard, train), map(shard, val), len(train_datasets)
+        return map(shard, train), {data_name:map(shard, val) for data_name, val in vals.items()}, len(train_datasets)
+    else:
+        return train, vals, len(train_datasets)

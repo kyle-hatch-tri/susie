@@ -34,8 +34,10 @@ def launch(args):
 
     if args.input_source == 'local':
         input_mode = 'File'
-        # training_inputs = {"calvin_data_processed":'file:///home/kylehatch/Desktop/hidql/data/calvin_data_processed/language_conditioned'}
         training_inputs = {"calvin_data_processed":'file:///home/kylehatch/Desktop/hidql/data/calvin_data_processed/language_conditioned',
+                        #    "libero_data_processed":'file:///home/kylehatch/Desktop/hidql/data/libero_data_processed',
+                           "libero_data_processed_split1":'file:///home/kylehatch/Desktop/hidql/data/libero_data_processed_split1',
+                           "libero_data_processed_split2":'file:///home/kylehatch/Desktop/hidql/data/libero_data_processed_split2',
                            "something_something_processed":'file:///home/kylehatch/Desktop/hidql/data/something_something_processed'}
     elif args.input_source == 'lustre':
         input_mode = 'File'
@@ -49,7 +51,11 @@ def launch(args):
         input_mode = 'FastFile'
         # train_fs = 's3://tri-ml-datasets/scratch/dianchen/datasets/' ###TODO
         training_inputs = {"calvin_data_processed":'s3://susie-data/calvin_data_processed/language_conditioned/',
+                        #    "libero_data_processed":'s3://susie-data/libero_data_processed/',
+                           "libero_data_processed_split1":'s3://susie-data/libero_data_processed_split1/',
+                           "libero_data_processed_split2":'s3://susie-data/libero_data_processed_split2/',
                            "something_something_processed":"s3://susie-data/something_something_processed/"}
+        
     else:
         raise ValueError(f'Invalid input source {args.input_source}')
 
@@ -287,84 +293,80 @@ python3 -u sagemaker_launch.py \
 --entry_point train.py \
 --user kylehatch \
 --local \
---input-source local \
+--input-source s3 \
 --config configs/base.py:sagemaker_local_debug \
 --base-job-name susie \
 --wandb-api-key 65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1 \
---exp_description local
+--exp_description local128smthlibs1
 
 
 # Remote no SMDDP debug
+./update_docker.sh
+./upload_docker.sh
 python3 -u sagemaker_launch.py \
 --entry_point train.py \
 --user kylehatch \
 --input-source s3 \
---config configs/base.py:sagemaker_debug \
+--config configs/base.py:sagemakerlbs2_debug \
 --base-job-name susie \
 --wandb-api-key 65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1 \
---exp_description remote \
---instance_type ml.p4de.24xlarge
+--exp_description 128smthlibs2 \
+--instance_type ml.p4d.24xlarge
 
 # Remote no SMDDP
+./update_docker.sh
+./upload_docker.sh
 python3 -u sagemaker_launch.py \
 --entry_point train.py \
 --user kylehatch \
 --input-source s3 \
---config configs/base.py:sagemaker \
+--config configs/base.py:sagemakerlbs2 \
 --base-job-name susie \
 --wandb-api-key 65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1 \
---exp_description remote400smth \
+--exp_description 128smthlibs2 \
 --instance_type ml.p4de.24xlarge
 
+./update_docker.sh
+./upload_docker.sh
 python3 -u sagemaker_launch.py \
 --entry_point train.py \
 --user kylehatch \
 --input-source s3 \
---config configs/base.py:sagemaker \
+--config configs/base.py:sagemaker400lbs2 \
 --base-job-name susie \
 --wandb-api-key 65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1 \
---exp_description remote128smth \
+--exp_description 400smthlibs2 \
 --instance_type ml.p4de.24xlarge
 
 
 
 
-Try EC2 
-- P4DE instance 
+[CALVIN] len(train_files): 18202                                                                                                                                                                                         
+[CALVIN] len(D_files): 1087                                                                                                                                                                                              
+next(iter(train_datasets[-1]))["lang"]:                                                                                                                                                                                  
+tf.Tensor(b'toggle the light switch to turn on the light bulb', shape=(), dtype=string)                                                                                                                                  
+data_name: libero                                                                                                                                                                                                        
+[LIBERO] len(train_files): 5600                                                                                                                                                                                          
+[LIBERO] len(val_files): 900                                                                                                                                                                                             
+next(iter(train_datasets[-1]))["lang"]:                                                                                                                                                                                  
+tf.Tensor(b'pick up the milk and put it in the basket', shape=(), dtype=string)                                                                                                                                          
+data_name: somethingsomething                                                                                                                                                                                            
+[SMTH SMTH] len(os.listdir(/opt/ml/input/data/something_something_processed/train)): 391                                                                                                                                 
+[SMTH SMTH] len(os.listdir(/opt/ml/input/data/something_something_processed/val)): 54    
 
 
-Try:
-- Try preallocate false 
-- Pytorch and jax side by side, check size of the model 
-- See where exzactly in the code it is OOMing 
-- manually initializing the cluster 
-    - Myabe don't use sagemaker ddp thing, but have a third script to do this manually 
-        - scratch tests first 
-
-- Testing GPU OOM behavior on sagemaker local 
-    - "CUDA_VISIBLE_DEVICES":"1" and "XLA_PYTHON_CLIENT_PREALLOCATE":"false",
-        - OOMs down to batch size 32 
-        - Works on batch size 16 (both w and w/o sagemaker)
-        - "XLA_PYTHON_CLIENT_PREALLOCATE":"false" doesn't seem to make a difference 
-    - Works with batch size 96,99 with 3 gpus 
-    - OOMs with batch size 102,108,120,192 with 3 gpus
-
-- check max batch pytorch size 
-    - pytorch can do 64,96,116,123 per gpu, but OOMs on 124,128 per gpu 
-
-24 Dec 23
-Current issue:
-- On Sagemaker, OOMs with large batch size with a single process
-    - Even though it has 8 gpus, running it in a single process still makes it OOM
-    - both 1024 and 512 
-- Works fine on with a single process with a small batch size of XXX
-- the train.py code is set up for multiprocessing
-    - not sure how to launch, waiting to hear from Kevin 
-    - launching with sagemaker mutliprocessing, the jax script doesn't recognize its being run as a multiprocess thing
-        - each script just thinks its being run independently 
 
 
-Tried
-- just set enabled=False
-    - Just does the same thing as not passing in the distribution dict to the estimator (ie: no distributed)
+[CALVIN] len(train_files): 18202                                                                                                                                                                           
+[CALVIN] len(D_files): 1087                                                                                                                                                                                
+next(iter(train_datasets[-1]))["lang"]:                                                                                                                                                                    
+tf.Tensor(b'toggle the light switch to turn on the light bulb', shape=(), dtype=string)                                                                                                                    
+data_name: libero                                                                                                                                                                                          
+[LIBERO] len(train_files): 5200                                                                                                                                                                            
+[LIBERO] len(val_files): 1300                                                                                                                                                                              
+next(iter(train_datasets[-1]))["lang"]:                                                                                                                                                                    
+tf.Tensor(b'put the red mug on the left plate', shape=(), dtype=string)                                                                                                                                    
+data_name: somethingsomething                                                                                                                                                                              
+[SMTH SMTH] len(os.listdir(/opt/ml/input/data/something_something_processed/train)): 391                                                                                                                   
+[SMTH SMTH] len(os.listdir(/opt/ml/input/data/something_something_processed/val)): 54      
 """

@@ -124,6 +124,18 @@ def base():
         truncate=False,
     )
 
+
+    config.data.libero = libero = deepcopy(data_base)
+    libero.weight = 15.0
+    # libero.data_path = "/home/kylehatch/Desktop/hidql/data/libero_data_processed" 
+    libero.data_path = "/home/kylehatch/Desktop/hidql/data/libero_data_processed_split1" 
+    libero.goal_relabeling_fn = "subgoal_only"
+    libero.goal_relabeling_kwargs = dict(
+        subgoal_delta=(20, 21),
+        truncate=False,
+    )
+
+
     config.data.somethingsomething = somethingsomething = deepcopy(data_base)
     somethingsomething.weight = 75.0
     somethingsomething.data_path = "/home/kylehatch/Desktop/hidql/data/something_something_processed"
@@ -163,10 +175,9 @@ def debug():
     config.sample_interval = 10
     config.num_val_batches = 4
 
-    config.data.batch_size = 16
-
     config.enable_wandb = False
-    config.wandb_project = "trash_results"
+    config.wandb_project = "el_trasho2"
+    config.save_to_s3 = False
     
 
     config.vae = "runwayml/stable-diffusion-v1-5:flax"
@@ -208,12 +219,30 @@ def debug():
 def sagemaker():
     config = base()
     config.data.batch_size = 128
+    # config.data.batch_size = 400
 
     config.data.calvin.data_path = "/opt/ml/input/data/calvin_data_processed"
     config.data.somethingsomething.data_path = "/opt/ml/input/data/something_something_processed"
-
+    # config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed"
+    config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed_split1"
     return config
 
+def sagemaker400():
+    config = sagemaker()
+    config.data.batch_size = 400
+    return config
+
+
+def sagemakerlbs2():
+    config = sagemaker()
+    config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed_split2"
+    return config
+
+
+def sagemaker400lbs2():
+    config = sagemakerlbs2()
+    config.data.batch_size = 400
+    return config
 
 def sagemaker_local_debug():
     config = debug()
@@ -227,6 +256,8 @@ def sagemaker_local_debug():
     
 
     config.data.calvin.data_path = "/opt/ml/input/data/calvin_data_processed"
+    # config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed"
+    config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed_split1"
     config.data.somethingsomething.data_path = "/opt/ml/input/data/something_something_processed"
 
     return config
@@ -235,10 +266,19 @@ def sagemaker_local_debug():
 def sagemaker_debug():
     config = debug()
 
-    config.enable_wandb = True
+    config.enable_wandb = False
     config.data.batch_size = 64
     config.data.calvin.data_path = "/opt/ml/input/data/calvin_data_processed"
+    # config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed"
+    config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed_split2"
     config.data.somethingsomething.data_path = "/opt/ml/input/data/something_something_processed"
+
+    return config
+
+
+def sagemakerlbs2_debug():
+    config = sagemaker_debug()
+    config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed_split2"
 
     return config
 
@@ -254,7 +294,7 @@ alias c=clear
 export WANDB_ENTITY="tri"
 export WANDB_API_KEY="65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1"
 export PYTHONPATH=$PYTHONPATH:/home/kylehatch/Desktop/hidql/susie/external/dlimp
-export EXP_DESCRIPTION="local_nosm"
+export EXP_DESCRIPTION="local_lib"
 export CUDA_VISIBLE_DEVICES=1
 python3 -u train.py --config configs/base.py:debug
 """
