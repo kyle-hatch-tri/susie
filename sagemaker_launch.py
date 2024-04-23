@@ -54,6 +54,8 @@ def launch(args):
                         #    "libero_data_processed":'s3://susie-data/libero_data_processed/',
                            "libero_data_processed_split1":'s3://susie-data/libero_data_processed_split1/',
                            "libero_data_processed_split2":'s3://susie-data/libero_data_processed_split2/',
+                           "libero_data_processed_split3":'s3://susie-data/libero_data_processed_split3/',
+                           "libero_data_processed_split4":'s3://susie-data/libero_data_processed_split4/',
                            "something_something_processed":"s3://susie-data/something_something_processed/"}
         
     else:
@@ -336,6 +338,19 @@ python3 -u sagemaker_launch.py \
 --base-job-name susie \
 --wandb-api-key 65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1 \
 --exp_description 400smthlibs2 \
+--instance_type ml.p4de.24xlarge
+
+
+./update_docker.sh
+./upload_docker.sh
+python3 -u sagemaker_launch.py \
+--entry_point train.py \
+--user kylehatch \
+--input-source s3 \
+--config configs/base.py:sagemaker400lbs4 \
+--base-job-name susie \
+--wandb-api-key 65915e3ae3752bc3ddc4b7eef1b066067b9d1cb1 \
+--exp_description 400smthlibs4 \
 --instance_type ml.p4de.24xlarge
 
 

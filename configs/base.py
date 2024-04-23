@@ -244,6 +244,30 @@ def sagemaker400lbs2():
     config.data.batch_size = 400
     return config
 
+
+def sagemakerlbs3():
+    config = sagemaker()
+    config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed_split3"
+    return config
+
+
+def sagemaker400lbs3():
+    config = sagemakerlbs3()
+    config.data.batch_size = 400
+    return config
+
+
+def sagemakerlbs4():
+    config = sagemaker()
+    config.data.libero.data_path = "/opt/ml/input/data/libero_data_processed_split4"
+    return config
+
+
+def sagemaker400lbs4():
+    config = sagemakerlbs4()
+    config.data.batch_size = 400
+    return config
+
 def sagemaker_local_debug():
     config = debug()
 
